@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"gitlab.com/iruldev/grpc-class/engine/repository"
 	"gitlab.com/iruldev/grpc-class/proto"
@@ -10,14 +12,18 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"io"
+	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestClientCreateLaptop(t *testing.T) {
 	t.Parallel()
 
-	laptopServer, serverAddress := startTestLaptopService(t, repository.NewLaptopRepository())
+	laptopRepo := repository.NewLaptopRepository()
+	serverAddress := startTestLaptopService(t, laptopRepo, nil)
 	laptopClient := newTestLaptopClient(t, serverAddress)
 
 	laptop := sample.NewLaptop()
@@ -30,7 +36,7 @@ func TestClientCreateLaptop(t *testing.T) {
 	require.Equal(t, expectedID, res.Id)
 
 	// check that the laptop is saved to the store
-	other, err := laptopServer.LaptopRepository.Find(expectedID)
+	other, err := laptopRepo.Find(expectedID)
 	require.NoError(t, err)
 	require.NotNil(t, other)
 
@@ -51,7 +57,7 @@ func TestClientSearchLaptop(t *testing.T) {
 		},
 	}
 
-	laptopRepository := repository.NewLaptopRepository()
+	laptopRepo := repository.NewLaptopRepository()
 	expectedIDs := make(map[string]bool)
 
 	for i := 0; i < 6; i++ {
@@ -91,11 +97,11 @@ func TestClientSearchLaptop(t *testing.T) {
 			expectedIDs[laptop.Id] = true
 		}
 
-		err := laptopRepository.Save(laptop)
+		err := laptopRepo.Save(laptop)
 		require.NoError(t, err)
 	}
 
-	_, serverAddress := startTestLaptopService(t, laptopRepository)
+	serverAddress := startTestLaptopService(t, laptopRepo, nil)
 	laptopClient := newTestLaptopClient(t, serverAddress)
 
 	req := &proto.SearchLaptopRequest{Filter: filter}
@@ -117,8 +123,77 @@ func TestClientSearchLaptop(t *testing.T) {
 	require.Equal(t, len(expectedIDs), found)
 }
 
-func startTestLaptopService(t *testing.T, laptopRepository repository.LaptopRepository) (*LaptopService, string) {
-	laptopServer := NewLaptopService(laptopRepository)
+func TestClientUploadImage(t *testing.T) {
+	t.Parallel()
+
+	testImageFolder := "../../tmp"
+	laptopRepo := repository.NewLaptopRepository()
+	imageRepo := repository.NewImageRepository(testImageFolder)
+
+	laptop := sample.NewLaptop()
+	err := laptopRepo.Save(laptop)
+	require.NoError(t, err)
+
+	serverAddress := startTestLaptopService(t, laptopRepo, imageRepo)
+	laptopClient := newTestLaptopClient(t, serverAddress)
+
+	imagePath := fmt.Sprintf("%s/laptop.jpg", testImageFolder)
+	file, err := os.Open(imagePath)
+	require.NoError(t, err)
+	defer file.Close()
+
+	stream, err := laptopClient.UploadImage(context.Background())
+	require.NoError(t, err)
+
+	imageType := filepath.Ext(imagePath)
+	req := &proto.UploadImageRequest{
+		Data: &proto.UploadImageRequest_Info{
+			Info: &proto.ImageInfo{
+				LaptopId:  laptop.GetId(),
+				ImageType: imageType,
+			},
+		},
+	}
+
+	err = stream.Send(req)
+	if err != nil {
+		log.Fatal("cannot send image info: ", err, stream.RecvMsg(nil))
+	}
+
+	reader := bufio.NewReader(file)
+	buffer := make([]byte, 1024)
+	size := 0
+
+	for {
+		n, err := reader.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		size += n
+
+		req := &proto.UploadImageRequest{
+			Data: &proto.UploadImageRequest_ChunkData{
+				ChunkData: buffer[:n],
+			},
+		}
+
+		err = stream.Send(req)
+		require.NoError(t, err)
+	}
+
+	res, err := stream.CloseAndRecv()
+	require.NoError(t, err)
+	require.NotZero(t, res.GetId())
+	require.EqualValues(t, size, res.GetSize())
+
+	savedImagePath := fmt.Sprintf("%s/%s%s", testImageFolder, res.GetId(), imageType)
+	require.FileExists(t, savedImagePath)
+	require.NoError(t, os.Remove(savedImagePath))
+}
+
+func startTestLaptopService(t *testing.T, laptopRepo repository.LaptopRepository, imageRepo repository.ImageRepository) string {
+	laptopServer := NewLaptopService(laptopRepo, imageRepo)
 
 	grpcServer := grpc.NewServer()
 	proto.RegisterLaptopServiceServer(grpcServer, laptopServer)
@@ -128,7 +203,7 @@ func startTestLaptopService(t *testing.T, laptopRepository repository.LaptopRepo
 
 	go grpcServer.Serve(listener) // block call
 
-	return laptopServer, listener.Addr().String()
+	return listener.Addr().String()
 }
 
 func newTestLaptopClient(t *testing.T, serverAddress string) proto.LaptopServiceClient {

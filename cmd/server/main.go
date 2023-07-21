@@ -7,6 +7,7 @@ import (
 	"gitlab.com/iruldev/grpc-class/engine/service"
 	"gitlab.com/iruldev/grpc-class/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 	"log"
 	"net"
 )
@@ -16,7 +17,9 @@ func main() {
 	flag.Parse()
 	log.Printf("start server on port %d", *port)
 
-	laptopServer := service.NewLaptopService(repository.NewLaptopRepository())
+	laptopRepo := repository.NewLaptopRepository()
+	imageRepo := repository.NewImageRepository("img")
+	laptopServer := service.NewLaptopService(laptopRepo, imageRepo)
 	grpcServer := grpc.NewServer()
 
 	proto.RegisterLaptopServiceServer(grpcServer, laptopServer)
@@ -26,6 +29,8 @@ func main() {
 	if err != nil {
 		log.Fatal("cannot start server: ", err)
 	}
+
+	reflection.Register(grpcServer)
 
 	err = grpcServer.Serve(listener)
 	if err != nil {

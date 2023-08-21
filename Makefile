@@ -9,3 +9,5 @@ server:
 
 client:
 	go run cmd/client/main.go -address 0.0.0.0:8787
+
+.PHONY: gen test server client

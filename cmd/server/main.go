@@ -19,7 +19,8 @@ func main() {
 
 	laptopRepo := repository.NewLaptopRepository()
 	imageRepo := repository.NewImageRepository("img")
-	laptopServer := service.NewLaptopService(laptopRepo, imageRepo)
+	ratingRepo := repository.NewRatingRepository()
+	laptopServer := service.NewLaptopService(laptopRepo, imageRepo, ratingRepo)
 	grpcServer := grpc.NewServer()
 
 	proto.RegisterLaptopServiceServer(grpcServer, laptopServer)

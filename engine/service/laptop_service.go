@@ -19,10 +19,19 @@ type LaptopService struct {
 	proto.UnimplementedLaptopServiceServer
 	LaptopRepository repository.LaptopRepository
 	ImageRepository  repository.ImageRepository
+	RatingRepository repository.RatingRepository
 }
 
-func NewLaptopService(laptopRepository repository.LaptopRepository, imageRepository repository.ImageRepository) *LaptopService {
-	return &LaptopService{LaptopRepository: laptopRepository, ImageRepository: imageRepository}
+func NewLaptopService(
+	laptopRepository repository.LaptopRepository,
+	imageRepository repository.ImageRepository,
+	ratingRepository repository.RatingRepository,
+) *LaptopService {
+	return &LaptopService{
+		LaptopRepository: laptopRepository,
+		ImageRepository:  imageRepository,
+		RatingRepository: ratingRepository,
+	}
 }
 
 func (s *LaptopService) CreateLaptop(ctx context.Context, req *proto.CreateLaptopRequest) (*proto.CreateLaptopResponse, error) {
@@ -162,6 +171,53 @@ func (s *LaptopService) UploadImage(stream proto.LaptopService_UploadImageServer
 
 	log.Printf("send image with id: %s, size: %d", imageID, imageSize)
 
+	return nil
+}
+
+func (s *LaptopService) RateLaptop(stream proto.LaptopService_RateLaptopServer) error {
+	for {
+		err := contextError(stream.Context())
+		if err != nil {
+			return err
+		}
+
+		req, err := stream.Recv()
+		if err == io.EOF {
+			log.Print("no more data")
+			break
+		}
+		if err != nil {
+			return logError(status.Errorf(codes.Unknown, "cannot receive stream request: %v", err))
+		}
+		laptopID := req.GetLaptopId()
+		score := req.GetScore()
+
+		log.Printf("received a rate-laptop request: id = %s, score = %.2f", laptopID, score)
+
+		found, err := s.LaptopRepository.Find(laptopID)
+		if err != nil {
+			return logError(status.Errorf(codes.Internal, "cannot find laptop: %v", err))
+		}
+		if found == nil {
+			return logError(status.Errorf(codes.NotFound, "laptop id %s is not found", laptopID))
+		}
+
+		rating, err := s.RatingRepository.Add(laptopID, score)
+		if err != nil {
+			return logError(status.Errorf(codes.Internal, "cannot add rating to the store: %v", err))
+		}
+
+		res := &proto.RateLaptopResponse{
+			LaptopId:     laptopID,
+			RatedCount:   rating.Count,
+			AverageScore: rating.Sum / float64(rating.Count),
+		}
+
+		err = stream.Send(res)
+		if err != nil {
+			return logError(status.Errorf(codes.Unknown, "cannot send stream response: %v", err))
+		}
+	}
 	return nil
 }
 

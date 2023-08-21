@@ -23,7 +23,7 @@ func TestClientCreateLaptop(t *testing.T) {
 	t.Parallel()
 
 	laptopRepo := repository.NewLaptopRepository()
-	serverAddress := startTestLaptopService(t, laptopRepo, nil)
+	serverAddress := startTestLaptopService(t, laptopRepo, nil, nil)
 	laptopClient := newTestLaptopClient(t, serverAddress)
 
 	laptop := sample.NewLaptop()
@@ -101,7 +101,7 @@ func TestClientSearchLaptop(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	serverAddress := startTestLaptopService(t, laptopRepo, nil)
+	serverAddress := startTestLaptopService(t, laptopRepo, nil, nil)
 	laptopClient := newTestLaptopClient(t, serverAddress)
 
 	req := &proto.SearchLaptopRequest{Filter: filter}
@@ -134,7 +134,7 @@ func TestClientUploadImage(t *testing.T) {
 	err := laptopRepo.Save(laptop)
 	require.NoError(t, err)
 
-	serverAddress := startTestLaptopService(t, laptopRepo, imageRepo)
+	serverAddress := startTestLaptopService(t, laptopRepo, imageRepo, nil)
 	laptopClient := newTestLaptopClient(t, serverAddress)
 
 	imagePath := fmt.Sprintf("%s/laptop.jpg", testImageFolder)
@@ -192,8 +192,55 @@ func TestClientUploadImage(t *testing.T) {
 	require.NoError(t, os.Remove(savedImagePath))
 }
 
-func startTestLaptopService(t *testing.T, laptopRepo repository.LaptopRepository, imageRepo repository.ImageRepository) string {
-	laptopServer := NewLaptopService(laptopRepo, imageRepo)
+func TestClientRateLaptop(t *testing.T) {
+	t.Parallel()
+
+	laptopRepo := repository.NewLaptopRepository()
+	ratingRepo := repository.NewRatingRepository()
+
+	laptop := sample.NewLaptop()
+	err := laptopRepo.Save(laptop)
+	require.NoError(t, err)
+
+	serverAddress := startTestLaptopService(t, laptopRepo, nil, ratingRepo)
+	laptopClient := newTestLaptopClient(t, serverAddress)
+
+	stream, err := laptopClient.RateLaptop(context.Background())
+	require.NoError(t, err)
+
+	scores := []float64{8, 7.5, 10}
+	averages := []float64{8, 7.75, 8.5}
+
+	n := len(scores)
+	for i := 0; i < n; i++ {
+		req := &proto.RateLaptopRequest{
+			LaptopId: laptop.GetId(),
+			Score:    scores[i],
+		}
+
+		err := stream.Send(req)
+		require.NoError(t, err)
+	}
+
+	err = stream.CloseSend()
+	require.NoError(t, err)
+
+	for idx := 0; ; idx++ {
+		res, err := stream.Recv()
+		if err == io.EOF {
+			require.Equal(t, n, idx)
+			return
+		}
+
+		require.NoError(t, err)
+		require.Equal(t, laptop.GetId(), res.GetLaptopId())
+		require.Equal(t, uint32(idx+1), res.GetRatedCount())
+		require.Equal(t, averages[idx], res.GetAverageScore())
+	}
+}
+
+func startTestLaptopService(t *testing.T, laptopRepo repository.LaptopRepository, imageRepo repository.ImageRepository, ratingRepo repository.RatingRepository) string {
+	laptopServer := NewLaptopService(laptopRepo, imageRepo, ratingRepo)
 
 	grpcServer := grpc.NewServer()
 	proto.RegisterLaptopServiceServer(grpcServer, laptopServer)
